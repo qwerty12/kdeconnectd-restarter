@@ -50,6 +50,8 @@ static VOID            (CDECL *dbus_connection_flush)(DBusConnection*) = nullptr
 static DBusMessage*    (CDECL *dbus_connection_pop_message)(DBusConnection*) = nullptr;
 static DWORD           (CDECL *dbus_connection_read_write)(DBusConnection*, INT) = nullptr;
 static DWORD           (CDECL *dbus_connection_send)(DBusConnection*, DBusMessage*, LPVOID) = nullptr;
+static VOID            (CDECL *dbus_connection_set_exit_on_disconnect)(DBusConnection*, DWORD) = nullptr;
+static VOID            (CDECL *dbus_connection_unref)(DBusConnection*) = nullptr;
 static DWORD           (CDECL *dbus_message_append_args)(DBusMessage*, INT, ...) = nullptr;
 static DWORD           (CDECL *dbus_message_get_args)(DBusMessage*, LPVOID, INT, ...) = nullptr;
 static DWORD           (CDECL *dbus_message_is_signal)(DBusMessage*, LPCSTR, LPCSTR) = nullptr;
@@ -63,11 +65,13 @@ static VOID StartKdeConnect(DBusConnection *conn)
     if (!msg)
         return;
 
-	dbus_message_append_args(msg, DBUS_TYPE_STRING, (LPCSTR[]) { KDECONNECT_SERVICE }, DBUS_TYPE_UINT32, (DWORD[]) {0}, DBUS_TYPE_INVALID);
-    dbus_message_set_no_reply(msg, TRUE);
-    dbus_connection_send(conn, msg, nullptr);
+	if (dbus_message_append_args(msg, DBUS_TYPE_STRING, (LPCSTR[]) { KDECONNECT_SERVICE }, DBUS_TYPE_UINT32, (DWORD[]) {0}, DBUS_TYPE_INVALID)) {
+        dbus_message_set_no_reply(msg, TRUE);
+        dbus_connection_send(conn, msg, nullptr);
+        dbus_connection_flush(conn);
+    }
+
     dbus_message_unref(msg);
-    dbus_connection_flush(conn);
 }
 
 static DWORD WINAPI ThreadProc(LPVOID lpParameter)
@@ -77,12 +81,10 @@ static DWORD WINAPI ThreadProc(LPVOID lpParameter)
     dbus_bus_add_match(conn, "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='" KDECONNECT_SERVICE "'", nullptr);
     dbus_connection_flush(conn);
 
-    for (;;) {
-        dbus_connection_read_write(conn, -1);
-
+    while (dbus_connection_read_write(conn, -1)) {
         DBusMessage *msg = dbus_connection_pop_message(conn);
         if (!msg) {
-            Sleep(1000);
+            Sleep(30000);
             continue;
         }
 
@@ -91,30 +93,23 @@ static DWORD WINAPI ThreadProc(LPVOID lpParameter)
             LPCSTR old_owner;
             LPCSTR new_owner;
 
-            if (!dbus_message_get_args(msg, nullptr,
-                    DBUS_TYPE_STRING, &name,
-                    DBUS_TYPE_STRING, &old_owner,
-                    DBUS_TYPE_STRING, &new_owner,
-                    DBUS_TYPE_INVALID)) {
+            if (!dbus_message_get_args(msg, nullptr, DBUS_TYPE_STRING, &name, DBUS_TYPE_STRING, &old_owner, DBUS_TYPE_STRING, &new_owner, DBUS_TYPE_INVALID))
                 goto msg_unref;
-            }
 
-            if (!name || !*name) {
+            if (!name || !*name)
                 goto msg_unref;
-            }
 
             Wh_Log(L"%S %S %S\n", name, old_owner, new_owner);
 
-            if (((!strcmp(name, KDECONNECT_SERVICE))) && ((!new_owner) || (new_owner && !*new_owner))) {
-                Sleep(5000);
+            if (((!strcmp(name, KDECONNECT_SERVICE))) && ((!new_owner) || (new_owner && !*new_owner)))
                 StartKdeConnect(conn);
-            }
         }
 
         msg_unref:
             dbus_message_unref(msg);
     }
 
+    dbus_connection_unref(conn);
     return 0;
 }
 
@@ -132,6 +127,8 @@ INT DetouredStart()
             *(FARPROC*)&dbus_connection_pop_message = GetProcAddress(hmodDbus, "dbus_connection_pop_message");
             *(FARPROC*)&dbus_connection_read_write = GetProcAddress(hmodDbus, "dbus_connection_read_write");
             *(FARPROC*)&dbus_connection_send = GetProcAddress(hmodDbus, "dbus_connection_send");
+            *(FARPROC*)&dbus_connection_set_exit_on_disconnect = GetProcAddress(hmodDbus, "dbus_connection_set_exit_on_disconnect");
+            *(FARPROC*)&dbus_connection_unref = GetProcAddress(hmodDbus, "dbus_connection_unref");
             *(FARPROC*)&dbus_message_append_args = GetProcAddress(hmodDbus, "dbus_message_append_args");
             *(FARPROC*)&dbus_message_get_args = GetProcAddress(hmodDbus, "dbus_message_get_args");
             *(FARPROC*)&dbus_message_is_signal = GetProcAddress(hmodDbus, "dbus_message_is_signal");
@@ -139,10 +136,12 @@ INT DetouredStart()
             *(FARPROC*)&dbus_message_set_no_reply = GetProcAddress(hmodDbus, "dbus_message_set_no_reply");
             *(FARPROC*)&dbus_message_unref = GetProcAddress(hmodDbus, "dbus_message_unref");
 
-            if ((conn = dbus_bus_get_private(0, nullptr)))
+            if ((conn = dbus_bus_get_private(0, nullptr))) {
+                dbus_connection_set_exit_on_disconnect(conn, FALSE);
                 CreateThread(nullptr, 0, ThreadProc, conn, 0, nullptr);
-            else
+            } else {
                 Wh_Log(L"Couldn't connect to KDE Connect's Session bus");
+            }
         } else {
             Wh_Log(L"Couldn't find symbol dbus_threads_init_default()");
         }
