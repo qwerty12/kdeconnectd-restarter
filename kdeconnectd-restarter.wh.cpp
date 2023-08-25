@@ -31,7 +31,9 @@ Thanks to m417z for Windhawk.
 
 // NOTE: I intentionally let the OS do the cleaning up
 
+#include <handleapi.h>
 #include <psapi.h>
+#include <winnt.h>
 
 #define DBUS_MODULE_NAME L"dbus-1-3.dll"
 #define KDECONNECT_SERVICE "org.kde.kdeconnect"
@@ -137,8 +139,12 @@ INT DetouredStart()
             *(FARPROC*)&dbus_message_unref = GetProcAddress(hmodDbus, "dbus_message_unref");
 
             if ((conn = dbus_bus_get_private(0, nullptr))) {
+                HANDLE hThread;
                 dbus_connection_set_exit_on_disconnect(conn, FALSE);
-                CreateThread(nullptr, 0, ThreadProc, conn, 0, nullptr);
+                if ((hThread = CreateThread(nullptr, 0, ThreadProc, conn, 0, nullptr))) {
+                    SetThreadPriority(hThread, THREAD_PRIORITY_LOWEST);
+                    CloseHandle(hThread);
+                }
             } else {
                 Wh_Log(L"Couldn't connect to KDE Connect's Session bus");
             }
